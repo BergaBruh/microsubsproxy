@@ -1,0 +1,36 @@
+# Скомпилированный бинарник
+/microsubsproxy
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Локальные конфиги и секреты
+/config.yaml
+config.local.yaml
+*.local.yaml
+.env
+.env.*
+
+# goreleaser snapshots
+/dist/
+
+# Редакторы / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code
+**/CLAUDE.md
+CLAUDE.md

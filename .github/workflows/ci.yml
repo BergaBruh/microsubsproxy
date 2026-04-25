@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build & vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+          cache: true
+
+      - name: gofmt check
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "Files need gofmt:"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build -v -o microsubsproxy .
+
+      - name: smoke run
+        env:
+          CONFIG: ./config.yaml.example
+        run: |
+          ./microsubsproxy &
+          PID=$!
+          sleep 1
+          if ! kill -0 $PID 2>/dev/null; then
+            echo "binary exited immediately"
+            wait $PID
+            exit 1
+          fi
+          kill $PID

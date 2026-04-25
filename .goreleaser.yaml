@@ -1,0 +1,95 @@
+version: 2
+
+project_name: microsubsproxy
+
+before:
+  hooks:
+    - go mod tidy
+    - chmod +x scripts/postinstall.sh scripts/preremove.sh
+
+builds:
+  - id: microsubsproxy
+    main: .
+    binary: microsubsproxy
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - config.yaml.example
+      - microsubsproxy.service
+
+nfpms:
+  - id: packages
+    package_name: microsubsproxy
+    vendor: BergaBruh
+    homepage: https://github.com/BergaBruh/microsubsproxy
+    maintainer: BergaBruh <bergabruh@outlook.com>
+    description: |
+      HTTP-сервис, агрегирующий VPN-подписки нескольких панелей 3x-ui
+      в единый эндпоинт.
+    section: net
+    priority: optional
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/local/bin
+    contents:
+      - src: ./microsubsproxy.service
+        dst: /lib/systemd/system/microsubsproxy.service
+
+      - src: ./config.yaml.example
+        dst: /etc/microsubsproxy/config.yaml.example
+        type: config|noreplace
+
+      - dst: /etc/microsubsproxy
+        type: dir
+        file_info:
+          mode: 0755
+
+    scripts:
+      postinstall: scripts/postinstall.sh
+      preremove: scripts/preremove.sh
+
+    overrides:
+      rpm:
+        dependencies:
+          - systemd
+      deb:
+        dependencies:
+          - systemd
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+
+release:
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"

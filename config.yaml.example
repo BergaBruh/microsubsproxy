@@ -1,0 +1,26 @@
+# microsubsproxy config
+
+# Адрес и порт. Переопределяется env LISTEN.
+listen: 127.0.0.1:8090
+
+# Префикс маршрута: запросы вида /<route_prefix>/<subId>.
+# Без слешей. Можно сменить, чтобы скрыть стандартный путь.
+route_prefix: route_prefix
+
+# Лимит длины subId (защита от мусорных запросов).
+max_sub_id_len: 64
+
+# Таймаут на каждый upstream-запрос. Формат time.ParseDuration: 5s, 500ms, 1m, ...
+upstream_timeout: 5s
+
+# Какие схемы строк подписки пропускаем в выдачу.
+valid_prefixes:
+  - vless://
+  - vmess://
+  - trojan://
+  - ss://
+
+# Шаблоны URL подписок 3x-ui панелей. %s подставляется из subId.
+upstreams:
+  - https://<node1_url>/<subscription1_prefix>/%s
+  - https://<node2_url>/<subscription2_prefix>/%s
