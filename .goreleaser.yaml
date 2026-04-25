@@ -38,7 +38,7 @@ nfpms:
     package_name: microsubsproxy
     vendor: BergaBruh
     homepage: https://github.com/BergaBruh/microsubsproxy
-    maintainer: BergaBruh <bergabruh@outlook.com>
+    maintainer: BergaBruh <BergaBruh@users.noreply.github.com>
     description: |
       HTTP-сервис, агрегирующий VPN-подписки нескольких панелей 3x-ui
       в единый эндпоинт.
