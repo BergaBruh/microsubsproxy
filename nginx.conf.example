@@ -1,0 +1,93 @@
+# Example nginx site config для microsubsproxy
+#
+# Установка:
+#   sudo install -m 644 nginx.conf.example /etc/nginx/sites-available/microsubsproxy
+#   sudo ln -s /etc/nginx/sites-available/microsubsproxy /etc/nginx/sites-enabled/
+#   sudo nginx -t && sudo systemctl reload nginx
+#
+# Перед установкой:
+#   1) Заменить `your.domain.example` на ваш домен
+#   2) Заменить `session` в location на ваш `route_prefix` из config.yaml
+#   3) Получить TLS-сертификат (пример с certbot ниже)
+#
+# Получение сертификата (Let's Encrypt, http-01):
+#   sudo certbot certonly --webroot -w /var/www/html -d your.domain.example \
+#     -m admin@your.domain.example --agree-tos --non-interactive
+#
+# Или DNS-01 через своего DNS-провайдера, или managed cert (e.g. Yandex CM, ZeroSSL).
+
+# HTTP — ACME challenge + redirect на HTTPS
+server {
+    listen 80;
+    listen [::]:80;
+    server_name your.domain.example;
+
+    # ACME http-01 challenge (если используется certbot --webroot)
+    location ^~ /.well-known/acme-challenge/ {
+        default_type "text/plain";
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# HTTPS — основной endpoint
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name your.domain.example;
+
+    ssl_certificate     /etc/letsencrypt/live/your.domain.example/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/your.domain.example/privkey.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384';
+    ssl_prefer_server_ciphers off;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:MozSSL:10m;
+    ssl_session_tickets off;
+
+    server_tokens off;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+
+    # Subscription endpoint.
+    # Регекс совпадает с микросабспрокси-валидацией subId: [A-Za-z0-9], длина ≤ max_sub_id_len.
+    # Замените `session` на ваш route_prefix из config.yaml.
+    location ~ ^/session/[A-Za-z0-9]{1,64}/?$ {
+        proxy_pass http://127.0.0.1:8090$request_uri;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Subscription должен быть свежим — убираем CDN/кеш
+        add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0" always;
+        add_header Pragma "no-cache" always;
+
+        proxy_read_timeout 30s;
+        proxy_send_timeout 30s;
+        proxy_connect_timeout 5s;
+    }
+
+    # Cover (landing) — опционально.
+    # Если у вас есть статический сайт-обложка, положите его в root и укажите тут.
+    # Без cover'а нода выглядит как "что-то с одним endpoint'ом" — это слабая
+    # маскировка, но достаточно для большинства случаев.
+    #
+    # location / {
+    #     root /var/www/html;
+    #     index index.html;
+    #     try_files $uri $uri/ =404;
+    # }
+    #
+    # Минимальный default — отдать 404 на всё, кроме subscription endpoint:
+    location / {
+        return 404;
+    }
+}

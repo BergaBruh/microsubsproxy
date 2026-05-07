@@ -24,3 +24,17 @@ valid_prefixes:
 upstreams:
   - https://<node1_url>/<subscription1_prefix>/%s
   - https://<node2_url>/<subscription2_prefix>/%s
+
+# Статичные конфиги, прибавляются к ответу подписки.
+# Полезно для inbound'ов, которых нет в 3x-ui (управляются вручную, через xray
+# в другой ноде, и т.п.). URL должен начинаться с одного из valid_prefixes.
+#
+# sub_ids опционален: пусто = инжект всем; иначе только перечисленным subId.
+#
+# static_inject:
+#   - url: "vless://uuid@addr:port?security=reality&type=xhttp&...#name"
+#     name: "RU Bridge"
+#     sub_ids: []          # пусто = всем; список subId = только им
+#   - url: "vless://..."
+#     name: "Backup endpoint"
+#     sub_ids: ["abc123def456"]

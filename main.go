@@ -17,12 +17,21 @@ import (
 const defaultConfigPath = "config.yaml"
 
 type Config struct {
-	Listen          string   `yaml:"listen"`
-	RoutePrefix     string   `yaml:"route_prefix"`
-	MaxSubIDLen     int      `yaml:"max_sub_id_len"`
-	UpstreamTimeout string   `yaml:"upstream_timeout"`
-	ValidPrefixes   []string `yaml:"valid_prefixes"`
-	Upstreams       []string `yaml:"upstreams"`
+	Listen          string         `yaml:"listen"`
+	RoutePrefix     string         `yaml:"route_prefix"`
+	MaxSubIDLen     int            `yaml:"max_sub_id_len"`
+	UpstreamTimeout string         `yaml:"upstream_timeout"`
+	ValidPrefixes   []string       `yaml:"valid_prefixes"`
+	Upstreams       []string       `yaml:"upstreams"`
+	StaticInject    []StaticInject `yaml:"static_inject,omitempty"`
+}
+
+// StaticInject — статичный конфиг, прибавляется к ответу подписки.
+// Если SubIDs пуст — попадает всем; иначе только перечисленным subId.
+type StaticInject struct {
+	URL    string   `yaml:"url"`
+	Name   string   `yaml:"name,omitempty"`
+	SubIDs []string `yaml:"sub_ids,omitempty"`
 }
 
 var (
@@ -32,6 +41,7 @@ var (
 	upstreamTO    time.Duration
 	validPrefixes []string
 	upstreams     []string
+	staticInject  []StaticInject
 	client        *http.Client
 )
 
@@ -75,6 +85,26 @@ func loadConfig(path string) error {
 			return fmt.Errorf("upstreams[%d] missing %%s placeholder: %s", i, u)
 		}
 	}
+	for i, si := range cfg.StaticInject {
+		if si.URL == "" {
+			return fmt.Errorf("static_inject[%d]: url is empty", i)
+		}
+		ok := false
+		for _, p := range cfg.ValidPrefixes {
+			if strings.HasPrefix(si.URL, p) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return fmt.Errorf("static_inject[%d]: url prefix not in valid_prefixes", i)
+		}
+		for j, id := range si.SubIDs {
+			if !validSubIDStr(id, cfg.MaxSubIDLen) {
+				return fmt.Errorf("static_inject[%d].sub_ids[%d]: invalid subId", i, j)
+			}
+		}
+	}
 
 	listenAddr = cfg.Listen
 	routePrefix = cfg.RoutePrefix
@@ -82,8 +112,23 @@ func loadConfig(path string) error {
 	upstreamTO = to
 	validPrefixes = cfg.ValidPrefixes
 	upstreams = cfg.Upstreams
+	staticInject = cfg.StaticInject
 	client = &http.Client{Timeout: upstreamTO}
 	return nil
+}
+
+// validSubIDStr — то же что validSubID, но принимает свой maxLen
+// (нужно чтобы валидировать sub_ids в loadConfig до того как глобальный maxSubIDLen установлен).
+func validSubIDStr(s string, maxLen int) bool {
+	if len(s) == 0 || len(s) > maxLen {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
 }
 
 func fetchUpstream(url string) []string {
@@ -127,15 +172,16 @@ func fetchUpstream(url string) []string {
 }
 
 func validSubID(s string) bool {
-	if len(s) == 0 || len(s) > maxSubIDLen {
-		return false
-	}
-	for _, r := range s {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
-			return false
+	return validSubIDStr(s, maxSubIDLen)
+}
+
+func subIDInList(list []string, id string) bool {
+	for _, x := range list {
+		if x == id {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -174,6 +220,15 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	for _, chunk := range results {
 		lines = append(lines, chunk...)
 	}
+
+	// Append static_inject entries for matching subId.
+	// Empty SubIDs list = inject for all subIds.
+	for _, si := range staticInject {
+		if len(si.SubIDs) == 0 || subIDInList(si.SubIDs, subID) {
+			lines = append(lines, si.URL)
+		}
+	}
+
 	if len(lines) == 0 {
 		http.Error(w, "all upstreams failed", http.StatusBadGateway)
 		return

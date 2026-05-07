@@ -34,6 +34,7 @@ HTTP-сервис на Go, который агрегирует VPN-подпис�
 | `upstream_timeout` | Таймаут на каждый апстрим в формате `time.ParseDuration` (`5s`, `500ms`, `1m`) |
 | `valid_prefixes` | Список разрешённых схем подписочных строк |
 | `upstreams` | Шаблоны URL панелей 3x-ui; должны содержать `%s` для подстановки `subId` |
+| `static_inject` | Опционально. Список статичных конфигов (`{url, name, sub_ids}`), которые приклеиваются к ответу подписки. Полезно для inbound'ов вне 3x-ui (например, вручную поднятый xray на другой ноде). Если `sub_ids` пуст — попадает всем; иначе только перечисленным `subId`. |
 
 Переменные окружения:
 
@@ -79,18 +80,42 @@ sudo systemctl enable --now microsubsproxy
 journalctl -u microsubsproxy -f
 ```
 
+### nginx (HTTPS terminate + reverse proxy)
+
+Сервис слушает на `127.0.0.1` и не имеет своего TLS - публично его не выставлять. Перед ним должен стоять реверс-прокси с TLS. Готовый пример - [nginx.conf.example](nginx.conf.example):
+
+```bash
+# 1) Получить сертификат (например, certbot)
+sudo certbot certonly --webroot -w /var/www/html -d your.domain.example \
+    -m admin@your.domain.example --agree-tos --non-interactive
+
+# 2) Установить site config
+sudo install -m 644 nginx.conf.example /etc/nginx/sites-available/microsubsproxy
+sudo ln -s /etc/nginx/sites-available/microsubsproxy /etc/nginx/sites-enabled/
+# Заменить your.domain.example и route_prefix `session` на свои значения
+sudo nano /etc/nginx/sites-available/microsubsproxy
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+В пример встроены: HTTP→HTTPS redirect + ACME http-01 challenge на :80; HSTS / no-cache / no-server-tokens; regex-валидация subId на nginx-уровне (`[A-Za-z0-9]{1,64}`); опциональный cover-landing.
+
+Caddy / Cloudflare-fronted деплой - поддерживается симметрично (TLS терминируется снаружи, прокси на `http://127.0.0.1:8090`); специального config'а в репо не нужно.
+
 ## Добавление нового сервера или протокола
 
 - **Новая панель 3x-ui** → добавить шаблон URL в `upstreams:` (с `%s` вместо `subId`) и `systemctl restart microsubsproxy`.
 - **Новый протокол** → добавить полный префикс (с `://`) в `valid_prefixes:` и рестарт.
+- **Inbound вне 3x-ui (ручной xray, кастомный мост)** → добавить запись в `static_inject:` с готовым `vless://`/`vmess://`/etc URL и рестарт. По умолчанию инжектится всем; для адресной выдачи указать `sub_ids: [...]`.
 
 ## Структура репозитория
 
 ```text
 microsubsproxy/
 ├── main.go                  — весь код сервиса в одном файле
-├── config.yaml              — конфиг по умолчанию
+├── config.yaml.example      — пример конфига
 ├── microsubsproxy.service   — systemd unit
+├── nginx.conf.example       — пример nginx site config (TLS terminate + reverse proxy)
+├── scripts/                 — postinstall / preremove hooks для пакетов
 ├── go.mod / go.sum
 └── README.md
 ```
