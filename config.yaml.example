@@ -14,11 +14,24 @@ max_sub_id_len: 64
 upstream_timeout: 5s
 
 # Какие схемы строк подписки пропускаем в выдачу.
+# В v2ray-формате (по умолчанию) все перечисленные схемы проходят как есть.
+# В clash-формате (?type=clash или UA matches clash|mihomo|verge|stash|flclash)
+# рендерятся только те схемы, для которых есть парсер.
+#
+# Поддерживаемые сейчас: vless, vmess, trojan, ss, hysteria2 (hy2), tuic,
+# wireguard (wg), ssr. Остальное в v2ray проходит pass-through, в clash —
+# отбрасывается.
 valid_prefixes:
   - vless://
   - vmess://
   - trojan://
   - ss://
+  - hysteria2://
+  - hy2://
+  - tuic://
+  - wireguard://
+  - wg://
+  - ssr://
 
 # Шаблоны URL подписок 3x-ui панелей. %s подставляется из subId.
 upstreams:
@@ -38,3 +51,37 @@ upstreams:
 #   - url: "vless://..."
 #     name: "Backup endpoint"
 #     sub_ids: ["abc123def456"]
+
+# Опциональный путь к base-YAML для clash-формата (mihomo). Содержимое файла
+# мерджится в выдачу: `proxies` всегда наш, остальное (`dns`, `tun`,
+# `rule-providers`, `rules`, `proxy-groups`) — из base. Если параметр пуст,
+# отдаётся минимальная клэш-конфигурация (PROXY select + MATCH,PROXY rule).
+#
+# В пользовательской proxy-group ссылка на наши прокси делается через
+# `include-all-proxies: true` — фича Mihomo, не нужно перечислять имена.
+#
+# Пример clash_extra.yaml:
+#   dns:
+#     enable: true
+#     enhanced-mode: fake-ip
+#     nameserver: [tls://1.1.1.1, tls://8.8.8.8]
+#   tun:
+#     enable: true
+#     stack: system
+#     auto-route: true
+#   rule-providers:
+#     ads:
+#       type: http
+#       behavior: domain
+#       url: https://example.com/ads.yaml
+#       interval: 86400
+#   proxy-groups:
+#     - name: PROXY
+#       type: select
+#       include-all-proxies: true
+#       proxies: [DIRECT]
+#   rules:
+#     - RULE-SET,ads,REJECT
+#     - MATCH,PROXY
+#
+# clash_extra: /etc/microsubsproxy/clash_extra.yaml

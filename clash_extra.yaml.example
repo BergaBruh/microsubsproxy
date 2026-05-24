@@ -1,0 +1,127 @@
+# Пример base-YAML для clash_extra.
+#
+# Этот файл мерджится в каждый clash-ответ microsubsproxy. Правило:
+#   - `proxies:` ВСЕГДА генерируется сервисом (в этом файле его быть НЕ должно).
+#   - Всё остальное (`dns`, `tun`, `rule-providers`, `rules`, `proxy-groups`,
+#     `mode`, `log-level`, ...) копируется в ответ без изменений.
+#
+# В proxy-groups ссылка на наши прокси делается через `include-all-proxies: true` —
+# фича Mihomo, перечислять имена не нужно.
+
+# ---- General ----
+mode: rule
+log-level: info
+ipv6: false
+allow-lan: false
+
+# external-controller: 127.0.0.1:9090
+# secret: "change-me"
+
+# ---- DNS ----
+dns:
+  enable: true
+  ipv6: false
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+    - "*.lan"
+    - "*.local"
+    - "localhost.ptlogin2.qq.com"
+  default-nameserver:
+    - 1.1.1.1
+    - 8.8.8.8
+  nameserver:
+    - https://1.1.1.1/dns-query
+    - https://dns.google/dns-query
+  fallback:
+    - tls://8.8.4.4
+  proxy-server-nameserver:
+    - 1.1.1.1
+    - 8.8.8.8
+
+# ---- TUN (для desktop/iOS, не для роутера/Docker) ----
+tun:
+  enable: true
+  stack: system          # mixed | system | gvisor
+  auto-route: true
+  auto-detect-interface: true
+  dns-hijack:
+    - any:53
+
+# ---- Rule providers ----
+# URL'ы лучше брать из поддерживаемого источника (например, Loyalsoldier/clash-rules)
+# и пинить через interval. Тут плейсхолдеры — замени на актуальные.
+rule-providers:
+  ads:
+    type: http
+    behavior: domain
+    format: text
+    url: https://example.com/lists/ads.txt
+    interval: 86400
+    path: ./rules/ads.txt
+  direct:
+    type: http
+    behavior: domain
+    format: text
+    url: https://example.com/lists/direct.txt
+    interval: 86400
+    path: ./rules/direct.txt
+  proxy:
+    type: http
+    behavior: domain
+    format: text
+    url: https://example.com/lists/proxy.txt
+    interval: 86400
+    path: ./rules/proxy.txt
+
+# ---- Proxy groups ----
+# PROXY — основной селектор. Auto — url-test по всем нашим прокси.
+# AdBlock — отдельная группа, чтобы рекламу можно было пускать через REJECT
+# (или, при отладке, временно переключить на DIRECT).
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - Auto
+      - DIRECT
+    include-all-proxies: true
+
+  - name: Auto
+    type: url-test
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+    tolerance: 50
+    include-all-proxies: true
+
+  - name: AdBlock
+    type: select
+    proxies:
+      - REJECT
+      - DIRECT
+
+# ---- Rules ----
+# Порядок имеет значение: первое совпадение выигрывает. Локальные/приватные
+# адреса первыми, чтобы не утекали в туннель; реклама режется до GEOIP;
+# Китай отдельно (если нужен бридж в обе стороны); MATCH в конце.
+rules:
+  # localhost / private — никогда в туннель
+  - DOMAIN-SUFFIX,local,DIRECT
+  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve
+  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
+  - IP-CIDR6,fe80::/10,DIRECT,no-resolve
+
+  # реклама
+  - RULE-SET,ads,AdBlock
+
+  # явно direct / явно proxy через rule-set'ы
+  - RULE-SET,direct,DIRECT
+  - RULE-SET,proxy,PROXY
+
+  # CN-домены/IP — напрямую (не нужно — убери эти две строки)
+  - GEOIP,CN,DIRECT
+  - GEOIP,private,DIRECT,no-resolve
+
+  # всё остальное — через прокси
+  - MATCH,PROXY
