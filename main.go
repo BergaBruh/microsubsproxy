@@ -1,15 +1,17 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
-	"sync"
 	"time"
+
+	"microsubsproxy/internal/fetch"
+	"microsubsproxy/internal/proxy"
+	"microsubsproxy/internal/render"
 
 	"gopkg.in/yaml.v3"
 )
@@ -24,6 +26,11 @@ type Config struct {
 	ValidPrefixes   []string       `yaml:"valid_prefixes"`
 	Upstreams       []string       `yaml:"upstreams"`
 	StaticInject    []StaticInject `yaml:"static_inject,omitempty"`
+	// Optional path to a YAML file with Mihomo base config (dns, tun,
+	// rule-providers, rules, proxy-groups, etc). Merged into clash output;
+	// `proxies` is always overwritten. When empty, a minimal output with a
+	// PROXY select group and MATCH,PROXY rule is generated.
+	ClashExtra string `yaml:"clash_extra,omitempty"`
 }
 
 // StaticInject — статичный конфиг, прибавляется к ответу подписки.
@@ -35,15 +42,28 @@ type StaticInject struct {
 }
 
 var (
-	listenAddr    string
-	routePrefix   string
-	maxSubIDLen   int
-	upstreamTO    time.Duration
-	validPrefixes []string
-	upstreams     []string
-	staticInject  []StaticInject
-	client        *http.Client
+	listenAddr   string
+	routePrefix  string
+	maxSubIDLen  int
+	staticInject []StaticInject
+	fetcher      *fetch.Client
+	clashExtra   map[string]any // loaded once at startup, nil if not configured
 )
+
+// clashUARegex matches User-Agents used by Mihomo-compatible clients.
+//
+// We require the canonical "Name/" (or "Name /") pattern that real Clash-family
+// clients emit (e.g. "Clash/v1.18.0", "mihomo/1.18.10", "Mihomo Party/1.2.3").
+// Using word-boundary matching (\b…\b) was too broad: it matched strings like
+// "compatible; verge bot" or "MyApp Stash Module/1.0" and caused false positives
+// that silently flipped v2ray clients to the Clash render path.
+//
+// The pattern anchors on: optional preceding whitespace/separator, then the
+// client name, then an optional space, then a literal "/".  This never matches
+// unless the slash follows directly.
+//
+// Keep this conservative — false positives flip the format and break v2ray-only clients.
+var clashUARegex = regexp.MustCompile(`(?i)(^|[\s(;])((clash([\s-]?(for[\s]?windows|x|meta|verge))?)|mihomo([\s-]?party)?|stash|flclash|verge)\s*/`)
 
 func loadConfig(path string) error {
 	data, err := os.ReadFile(path)
@@ -106,14 +126,34 @@ func loadConfig(path string) error {
 		}
 	}
 
+	// Load clash_extra base YAML if configured. Validated by attempting to
+	// unmarshal — a syntax error here is a hard config failure.
+	var extra map[string]any
+	if cfg.ClashExtra != "" {
+		raw, err := os.ReadFile(cfg.ClashExtra)
+		if err != nil {
+			return fmt.Errorf("read clash_extra %s: %w", cfg.ClashExtra, err)
+		}
+		if err := yaml.Unmarshal(raw, &extra); err != nil {
+			return fmt.Errorf("parse clash_extra %s: %w", cfg.ClashExtra, err)
+		}
+		// Refuse to silently override our generated proxies — if the user put
+		// `proxies:` in their base, they're confused.
+		if _, has := extra["proxies"]; has {
+			return fmt.Errorf("clash_extra %s contains 'proxies' — that key is generated, remove it", cfg.ClashExtra)
+		}
+	}
+
 	listenAddr = cfg.Listen
 	routePrefix = cfg.RoutePrefix
 	maxSubIDLen = cfg.MaxSubIDLen
-	upstreamTO = to
-	validPrefixes = cfg.ValidPrefixes
-	upstreams = cfg.Upstreams
 	staticInject = cfg.StaticInject
-	client = &http.Client{Timeout: upstreamTO}
+	clashExtra = extra
+	fetcher = &fetch.Client{
+		HTTP:          &http.Client{Timeout: to},
+		Upstreams:     cfg.Upstreams,
+		ValidPrefixes: cfg.ValidPrefixes,
+	}
 	return nil
 }
 
@@ -131,46 +171,6 @@ func validSubIDStr(s string, maxLen int) bool {
 	return true
 }
 
-func fetchUpstream(url string) []string {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		log.Printf("build request: %v", err)
-		return nil
-	}
-	req.Header.Set("User-Agent", "microsubsproxy/1.0")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("upstream fail: %v", err)
-		return nil
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Printf("upstream read fail: %v", err)
-		return nil
-	}
-	text := strings.TrimSpace(string(raw))
-
-	// 3x-ui may return base64 or plain; try base64 first
-	if dec, err := base64.StdEncoding.DecodeString(text); err == nil {
-		text = string(dec)
-	}
-
-	var lines []string
-	for _, ln := range strings.Split(text, "\n") {
-		ln = strings.TrimSpace(ln)
-		for _, p := range validPrefixes {
-			if strings.HasPrefix(ln, p) {
-				lines = append(lines, ln)
-				break
-			}
-		}
-	}
-	return lines
-}
-
 func validSubID(s string) bool {
 	return validSubIDStr(s, maxSubIDLen)
 }
@@ -182,6 +182,21 @@ func subIDInList(list []string, id string) bool {
 		}
 	}
 	return false
+}
+
+// detectFormat resolves the output format from query param (priority 1) and
+// User-Agent (priority 2). Default is "v2ray" to preserve existing client behavior.
+func detectFormat(r *http.Request) string {
+	switch strings.ToLower(r.URL.Query().Get("type")) {
+	case "clash", "mihomo":
+		return "clash"
+	case "v2ray":
+		return "v2ray"
+	}
+	if clashUARegex.MatchString(r.Header.Get("User-Agent")) {
+		return "clash"
+	}
+	return "v2ray"
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -201,46 +216,51 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Log without subId — it's a secret
-	log.Printf("%s - aggregate", r.RemoteAddr)
+	format := detectFormat(r)
 
-	// Parallel fetch, preserve upstream order in output
-	results := make([][]string, len(upstreams))
-	var wg sync.WaitGroup
-	for i, tmpl := range upstreams {
-		wg.Add(1)
-		go func(i int, tmpl string) {
-			defer wg.Done()
-			results[i] = fetchUpstream(fmt.Sprintf(tmpl, subID))
-		}(i, tmpl)
-	}
-	wg.Wait()
+	// Log without subId — it's a secret.
+	log.Printf("%s - aggregate format=%s", r.RemoteAddr, format)
 
-	var lines []string
-	for _, chunk := range results {
-		lines = append(lines, chunk...)
-	}
-
-	// Append static_inject entries for matching subId.
-	// Empty SubIDs list = inject for all subIds.
+	uris := fetcher.Aggregate(subID)
 	for _, si := range staticInject {
 		if len(si.SubIDs) == 0 || subIDInList(si.SubIDs, subID) {
-			lines = append(lines, si.URL)
+			uris = append(uris, si.URL)
 		}
 	}
 
-	if len(lines) == 0 {
+	if len(uris) == 0 {
 		http.Error(w, "all upstreams failed", http.StatusBadGateway)
 		return
 	}
 
-	body := base64.StdEncoding.EncodeToString([]byte(strings.Join(lines, "\n")))
+	var body []byte
+	var contentType string
+	switch format {
+	case "clash":
+		proxies, dropped := proxy.ParseAll(uris)
+		if dropped > 0 {
+			log.Printf("clash render: parsed %d/%d URIs, dropped %d", len(proxies), len(uris), dropped)
+		}
+		out, err := render.Clash(proxies, clashExtra)
+		if err != nil {
+			log.Printf("render clash: %v", err)
+			http.Error(w, "render failed", http.StatusInternalServerError)
+			return
+		}
+		body = out
+		contentType = "text/yaml; charset=utf-8"
+	default:
+		body = render.V2Ray(uris)
+		contentType = "text/plain; charset=utf-8"
+	}
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Subscription-Userinfo", "upload=0; download=0; total=0")
+	w.Header().Set("Content-Type", contentType)
+	// Do NOT emit Subscription-Userinfo when we don't know the real usage —
+	// asserting "upload=0; download=0; total=0" triggers a "subscription exhausted"
+	// warning in some Clash clients.
 	w.Header().Set("Profile-Update-Interval", "24")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(body))
+	_, _ = w.Write(body)
 }
 
 func main() {
@@ -261,7 +281,7 @@ func main() {
 	}
 
 	log.Printf("loaded %d upstreams from %s (route /%s/, timeout %s)",
-		len(upstreams), cfgPath, routePrefix, upstreamTO)
+		len(fetcher.Upstreams), cfgPath, routePrefix, fetcher.HTTP.Timeout)
 	log.Printf("microsubsproxy listening on %s", addr)
 
 	srv := &http.Server{
