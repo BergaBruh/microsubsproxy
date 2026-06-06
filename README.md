@@ -1,125 +1,127 @@
 # microsubsproxy
 
-HTTP-сервис на Go, который агрегирует VPN-подписки с нескольких панелей 3x-ui в одну сводную ссылку. Клиент (V2RayNG, Hiddify, v2rayN, Clash Verge Rev, Mihomo Party, FlClash и т.п.) подписывается на единый URL, а сервис отдаёт результат либо в V2Ray-формате (base64-список), либо в Clash/Mihomo YAML — в зависимости от `?type=` или `User-Agent`.
+[🇷🇺 Русская версия](docs/README_ru.md)
 
-## Зачем это нужно
+An HTTP service in Go that aggregates VPN subscriptions from multiple 3x-ui panels into a single unified URL. Clients (V2RayNG, Hiddify, v2rayN, Clash Verge Rev, Mihomo Party, FlClash, etc.) subscribe to one endpoint; the service returns either a V2Ray-format response (base64 list) or a Clash/Mihomo YAML — depending on `?type=` or `User-Agent`.
 
-Если у вас несколько серверов на 3x-ui, каждый из них выдаёт свою подписку. Чтобы клиенту не приходилось добавлять их по одной и не терять серверы при ротации, microsubsproxy собирает всё в один эндпоинт. Добавление нового узла = одна строка в конфиге и `systemctl restart`.
+## Why
 
-## Как это работает
+If you run multiple 3x-ui servers, each one produces its own subscription URL. Instead of adding them one by one in every client and losing servers during rotation, microsubsproxy merges everything into a single endpoint. Adding a new node = one line in the config + `systemctl restart`.
 
-1. Клиент делает `GET /<route_prefix>/<subId>[?type=clash|v2ray]`.
-2. Сервис валидирует `subId` (только `[A-Za-z0-9]`, длина ≤ `max_sub_id_len`).
-3. Параллельно опрашивает все шаблоны из `upstreams`, подставляя `subId` в `%s`.
-4. Каждый ответ при необходимости декодируется из base64, разбивается по строкам и фильтруется по `valid_prefixes` (`vless://`, `vmess://`, `trojan://`, `ss://`).
-5. К результату дописываются записи из `static_inject` (если есть и подходят по `sub_ids`).
-6. Формат выдачи выбирается по `?type=` (приоритет 1) или `User-Agent` (приоритет 2):
-   - **v2ray** (по умолчанию): base64-список URI, `Content-Type: text/plain`. Совместимо с V2RayNG, v2rayN, Hiddify, NekoBox, и т.д.
-   - **clash**: YAML с секциями `proxies`, `proxy-groups` (`select PROXY`), `rules` (`MATCH,PROXY`), `Content-Type: text/yaml`. Совместимо с Mihomo (Clash Meta), Clash Verge Rev, Mihomo Party, FlClash, Stash. Оригинальный Clash не поддерживается (он не понимает VLESS).
-7. Если хотя бы один апстрим вернул валидные строки — ответ 200. Если все молчат — 502.
+## How it works
 
-### Выбор формата
+1. Client sends `GET /<route_prefix>/<subId>[?type=clash|v2ray]`.
+2. Service validates `subId` (only `[A-Za-z0-9]`, length ≤ `max_sub_id_len`).
+3. Queries all templates from `upstreams` in parallel, substituting `subId` into `%s`.
+4. Each response is base64-decoded if needed, split into lines, and filtered by `valid_prefixes` (`vless://`, `vmess://`, `trojan://`, `ss://`).
+5. Entries from `static_inject` are appended (if present and matching `sub_ids`).
+6. Output format is chosen by `?type=` (priority 1) or `User-Agent` (priority 2):
+   - **v2ray** (default): base64 URI list, `Content-Type: text/plain`. Compatible with V2RayNG, v2rayN, Hiddify, NekoBox, etc.
+   - **clash**: YAML with `proxies`, `proxy-groups` (`select PROXY`), `rules` (`MATCH,PROXY`), `Content-Type: text/yaml`. Compatible with Mihomo (Clash Meta), Clash Verge Rev, Mihomo Party, FlClash, Stash. Original Clash is not supported (it doesn't understand VLESS).
+7. If at least one upstream returned valid lines — 200. If all are silent — 502.
 
-| Способ | Приоритет | Пример |
-|--------|-----------|--------|
-| `?type=clash` / `?type=v2ray` | 1 (явный) | `GET /sub/abc?type=clash` |
-| `User-Agent` содержит `clash\|mihomo\|verge\|stash\|flclash\|clashx` | 2 (авто) | `curl -A "mihomo/1.18" ...` |
-| Иначе | — | v2ray base64 |
+### Format selection
 
-URI, которые не парсятся в Proxy-модель, попадают в v2ray-выдачу как есть (pass-through), но **отбрасываются** в clash-выдаче.
+| Method | Priority | Example |
+|--------|----------|---------|
+| `?type=clash` / `?type=v2ray` | 1 (explicit) | `GET /sub/abc?type=clash` |
+| `User-Agent` contains `clash\|mihomo\|verge\|stash\|flclash\|clashx` | 2 (auto) | `curl -A "mihomo/1.18" ...` |
+| Otherwise | — | v2ray base64 |
 
-Поддерживаются:
+URIs that can't be parsed into a Proxy model are passed through as-is in v2ray output but **dropped** in clash output.
 
-| Протокол | Префиксы | Особенности |
-|----------|----------|-------------|
+Supported protocols:
+
+| Protocol | Prefixes | Notes |
+|----------|----------|-------|
 | VLESS | `vless://` | Reality, xtls-rprx-vision, tcp/ws/grpc/xhttp/httpupgrade |
 | VMess | `vmess://` | base64(JSON), tcp/ws/grpc/h2, alias `scy`/`security` |
 | Trojan | `trojan://` | tcp/ws/grpc, allowInsecure |
-| Shadowsocks | `ss://` | SIP002 (base64 и plaintext userinfo) + legacy whole-body base64 |
+| Shadowsocks | `ss://` | SIP002 (base64 and plaintext userinfo) + legacy whole-body base64 |
 | Hysteria2 | `hysteria2://`, `hy2://` | Salamander obfs, QUIC+TLS implicit |
 | TUIC v5 | `tuic://` | uuid:password, congestion-control, udp-relay-mode |
 | WireGuard | `wireguard://`, `wg://` | private/public keys, allowed-ips, Cloudflare WARP `reserved` |
 | ShadowsocksR | `ssr://` | Legacy single-blob base64, protocol+obfs params |
 
-Hysteria1 и UDP-only протоколы вне списка — не поддерживаются.
+Hysteria1 and UDP-only protocols outside this list are not supported.
 
-Для **SS-плагинов** (SIP003) парсится `?plugin=...` строка из SIP002 URI и попадает в clash YAML как `plugin:` + `plugin-opts:`. Поддерживаются:
+For **SS plugins** (SIP003), the `?plugin=...` string from SIP002 URI is parsed and included in clash YAML as `plugin:` + `plugin-opts:`. Supported:
 
-| Плагин | Алиасы | YAML вывод |
-|--------|--------|------------|
+| Plugin | Aliases | YAML output |
+|--------|---------|-------------|
 | `obfs` | `obfs-local`, `simple-obfs` | `plugin: obfs`, `plugin-opts: {mode, host}` |
 | `v2ray-plugin` | — | `plugin: v2ray-plugin`, `plugin-opts: {mode, host, path, tls, mux, skip-cert-verify}` |
 | `shadow-tls` | — | `plugin: shadow-tls`, `plugin-opts: {host, password, version}` |
 
-## Расширение Clash-вывода (dns, tun, rule-providers, ...)
+## Extending Clash output (dns, tun, rule-providers, ...)
 
-По умолчанию clash-выдача содержит только `proxies`, дефолтную `proxy-groups: [PROXY select]` и `rules: [MATCH,PROXY]`. Для production-сетапов этого мало.
+By default the clash response contains only `proxies`, a default `proxy-groups: [PROXY select]`, and `rules: [MATCH,PROXY]`. That's not enough for production setups.
 
-Параметр `clash_extra` в [config.yaml.example](config.yaml.example) принимает путь к base-YAML, который мерджится в каждый clash-ответ. Семантика:
+The `clash_extra` parameter in [config.yaml.example](config.yaml.example) accepts a path to a base YAML that is merged into every clash response. Semantics:
 
-- `proxies` — **всегда** генерируется нами (если в base есть этот ключ, сервис откажется стартовать).
-- Все остальные ключи (`dns`, `tun`, `rule-providers`, `rules`, `proxy-groups`, и т.д.) — из base, без изменений.
-- Если base не содержит `proxy-groups`/`rules`, добавляются дефолты.
+- `proxies` — **always** generated by us (if the base contains this key, the service will refuse to start).
+- All other keys (`dns`, `tun`, `rule-providers`, `rules`, `proxy-groups`, etc.) — taken from base, unchanged.
+- If base doesn't contain `proxy-groups`/`rules`, defaults are added.
 
-В пользовательской `proxy-group` для ссылки на наши прокси используй **`include-all-proxies: true`** — это фича Mihomo, имена прокси перечислять не нужно (они генерируются динамически).
+In custom `proxy-group`, use **`include-all-proxies: true`** to reference our proxies — this is a Mihomo feature, no need to enumerate proxy names (they are generated dynamically).
 
-Base-YAML читается **один раз при старте** — изменения требуют рестарта.
+Base YAML is read **once at startup** — changes require a restart.
 
-## Безопасность
+## Security
 
-- `subId` считается секретом и **не пишется в логи** - логируется только `RemoteAddr`.
-- Сервис слушает на `127.0.0.1` - рассчитан на работу за реверс-прокси (nginx/caddy) с TLS.
-- systemd-юнит запускается со строгим хардингом: `ProtectSystem=strict`, `MemoryDenyWriteExecute`, фильтр syscalls `@system-service` минус `@privileged @resources`.
+- `subId` is treated as a secret and **never written to logs** — only `RemoteAddr` is logged.
+- Service listens on `127.0.0.1` — designed to run behind a reverse proxy (nginx/caddy) with TLS.
+- systemd unit runs with strict hardening: `ProtectSystem=strict`, `MemoryDenyWriteExecute`, syscall filter `@system-service` minus `@privileged @resources`.
 
-## Конфигурация
+## Configuration
 
-Все настройки — в [config.yaml.example](config.yaml.example):
+All settings are in [config.yaml.example](config.yaml.example):
 
-| Поле | Назначение |
-| --- | --- |
-| `listen` | Адрес и порт прослушивания (`host:port`) |
-| `route_prefix` | Префикс маршрута без слешей; запрос идёт на `/<route_prefix>/<subId>` |
-| `max_sub_id_len` | Максимальная длина `subId` (защита от мусорных запросов) |
-| `upstream_timeout` | Таймаут на каждый апстрим в формате `time.ParseDuration` (`5s`, `500ms`, `1m`) |
-| `valid_prefixes` | Список разрешённых схем подписочных строк |
-| `upstreams` | Шаблоны URL панелей 3x-ui; должны содержать `%s` для подстановки `subId` |
-| `static_inject` | Опционально. Список статичных конфигов (`{url, name, sub_ids}`), которые приклеиваются к ответу подписки. Полезно для inbound'ов вне 3x-ui (например, вручную поднятый xray на другой ноде). Если `sub_ids` пуст — попадает всем; иначе только перечисленным `subId`. |
-| `clash_extra` | Опционально. Путь к base-YAML для clash-формата (dns, tun, rule-providers, custom proxy-groups). См. раздел «Расширение Clash-вывода». |
+| Field | Purpose |
+|-------|---------|
+| `listen` | Listen address and port (`host:port`) |
+| `route_prefix` | Route prefix without slashes; requests go to `/<route_prefix>/<subId>` |
+| `max_sub_id_len` | Maximum `subId` length (protection against garbage requests) |
+| `upstream_timeout` | Timeout per upstream in `time.ParseDuration` format (`5s`, `500ms`, `1m`) |
+| `valid_prefixes` | List of allowed subscription line schemes |
+| `upstreams` | 3x-ui panel URL templates; must contain `%s` for `subId` substitution |
+| `static_inject` | Optional. List of static configs (`{url, name, sub_ids}`) appended to subscription output. Useful for inbounds outside 3x-ui (e.g. a manually launched xray on another node). If `sub_ids` is empty — injected for everyone; otherwise only for the listed `subId`s. |
+| `clash_extra` | Optional. Path to base YAML for clash format (dns, tun, rule-providers, custom proxy-groups). See "Extending Clash output". |
 
-Переменные окружения:
+Environment variables:
 
-- `CONFIG` - путь к конфигу (по умолчанию `./config.yaml`).
-- `LISTEN` - оверрайд `listen` для разовых запусков.
+- `CONFIG` — path to config file (default: `./config.yaml`).
+- `LISTEN` — overrides `listen` for one-off runs.
 
-Конфиг читается **один раз при старте** - изменения требуют рестарта процесса.
+Config is read **once at startup** — changes require a process restart.
 
-## Сборка и запуск
+## Build and run
 
 ```bash
-# Сборка
+# Build
 go build -o microsubsproxy .
 
-# Локальный запуск с дефолтным конфигом
+# Local run with default config
 go run .
 
-# Альтернативный конфиг и порт
+# Alternate config and port
 CONFIG=/etc/microsubsproxy/config.yaml LISTEN=0.0.0.0:9000 go run .
 
-# Проверка (v2ray по умолчанию)
+# Check (v2ray by default)
 curl http://127.0.0.1:8090/session/<subId>
 
-# Clash/Mihomo через query param
+# Clash/Mihomo via query param
 curl 'http://127.0.0.1:8090/session/<subId>?type=clash'
 
-# Clash через User-Agent (имитация Mihomo)
+# Clash via User-Agent (simulate Mihomo)
 curl -A 'mihomo/1.18' http://127.0.0.1:8090/session/<subId>
 ```
 
-Зависимости: Go 1.26+, `gopkg.in/yaml.v3`.
+Dependencies: Go 1.26+, `gopkg.in/yaml.v3`.
 
-## Деплой
+## Deployment
 
-Юнит [microsubsproxy.service](microsubsproxy.service) ожидает бинарник по пути `/usr/local/bin/microsubsproxy` и конфиг по `/etc/microsubsproxy/config.yaml` (FHS-стиль: бинарник в `PATH`, конфиг отдельно от исполняемого файла).
+The unit [microsubsproxy.service](microsubsproxy.service) expects the binary at `/usr/local/bin/microsubsproxy` and config at `/etc/microsubsproxy/config.yaml` (FHS-style: binary in `PATH`, config separate from the executable).
 
 ```bash
 sudo install -m 755 microsubsproxy /usr/local/bin/
@@ -130,7 +132,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now microsubsproxy
 ```
 
-Логи:
+Logs:
 
 ```bash
 journalctl -u microsubsproxy -f
@@ -138,44 +140,44 @@ journalctl -u microsubsproxy -f
 
 ### nginx (HTTPS terminate + reverse proxy)
 
-Сервис слушает на `127.0.0.1` и не имеет своего TLS - публично его не выставлять. Перед ним должен стоять реверс-прокси с TLS. Готовый пример - [nginx.conf.example](nginx.conf.example):
+The service listens on `127.0.0.1` and has no TLS of its own — do not expose it publicly. A reverse proxy with TLS must sit in front. Ready example — [nginx.conf.example](nginx.conf.example):
 
 ```bash
-# 1) Получить сертификат (например, certbot)
+# 1) Get a certificate (e.g. certbot)
 sudo certbot certonly --webroot -w /var/www/html -d your.domain.example \
     -m admin@your.domain.example --agree-tos --non-interactive
 
-# 2) Установить site config
+# 2) Install site config
 sudo install -m 644 nginx.conf.example /etc/nginx/sites-available/microsubsproxy
 sudo ln -s /etc/nginx/sites-available/microsubsproxy /etc/nginx/sites-enabled/
-# Заменить your.domain.example и route_prefix `session` на свои значения
+# Replace your.domain.example and route_prefix `session` with your own values
 sudo nano /etc/nginx/sites-available/microsubsproxy
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-В пример встроены: HTTP→HTTPS redirect + ACME http-01 challenge на :80; HSTS / no-cache / no-server-tokens; regex-валидация subId на nginx-уровне (`[A-Za-z0-9]{1,64}`); опциональный cover-landing.
+Included in the example: HTTP→HTTPS redirect + ACME http-01 challenge on :80; HSTS / no-cache / no-server-tokens; nginx-level subId regex validation (`[A-Za-z0-9]{1,64}`); optional cover landing page.
 
-Caddy / Cloudflare-fronted деплой - поддерживается симметрично (TLS терминируется снаружи, прокси на `http://127.0.0.1:8090`); специального config'а в репо не нужно.
+Caddy / Cloudflare-fronted deployment is supported symmetrically (TLS terminated externally, proxy to `http://127.0.0.1:8090`); no special config needed in the repo.
 
-## Добавление нового сервера или протокола
+## Adding a new server or protocol
 
-- **Новая панель 3x-ui** → добавить шаблон URL в `upstreams:` (с `%s` вместо `subId`) и `systemctl restart microsubsproxy`.
-- **Новый протокол** → добавить полный префикс (с `://`) в `valid_prefixes:` и рестарт.
-- **Inbound вне 3x-ui (ручной xray, кастомный мост)** → добавить запись в `static_inject:` с готовым `vless://`/`vmess://`/etc URL и рестарт. По умолчанию инжектится всем; для адресной выдачи указать `sub_ids: [...]`.
+- **New 3x-ui panel** → add the URL template to `upstreams:` (with `%s` in place of `subId`) and `systemctl restart microsubsproxy`.
+- **New protocol** → add the full prefix (with `://`) to `valid_prefixes:` and restart.
+- **Inbound outside 3x-ui (manual xray, custom bridge)** → add an entry to `static_inject:` with a ready-made `vless://`/`vmess://`/etc URL and restart. Injected for everyone by default; for targeted delivery specify `sub_ids: [...]`.
 
-## Структура репозитория
+## Repository structure
 
 ```text
 microsubsproxy/
-├── main.go                  — HTTP-слой, загрузка конфига, роутинг
+├── main.go                  — HTTP layer, config loading, routing
 ├── internal/
-│   ├── fetch/               — параллельный опрос апстримов и фильтрация по схемам
-│   ├── proxy/               — общий тип Proxy и парсеры vless/vmess/trojan/ss
-│   └── render/              — рендеринг в v2ray (base64) и Clash/Mihomo YAML
-├── config.yaml.example      — пример конфига
+│   ├── fetch/               — parallel upstream polling and scheme filtering
+│   ├── proxy/               — common Proxy type and vless/vmess/trojan/ss parsers
+│   └── render/              — rendering to v2ray (base64) and Clash/Mihomo YAML
+├── config.yaml.example      — example config
 ├── microsubsproxy.service   — systemd unit
-├── nginx.conf.example       — пример nginx site config (TLS terminate + reverse proxy)
-├── scripts/                 — postinstall / preremove hooks для пакетов
+├── nginx.conf.example       — example nginx site config (TLS terminate + reverse proxy)
+├── scripts/                 — postinstall / preremove hooks for packages
 ├── go.mod / go.sum
 └── README.md
 ```
