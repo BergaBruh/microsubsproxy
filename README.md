@@ -86,6 +86,7 @@ All settings are in [config.yaml.example](config.yaml.example):
 | `valid_prefixes` | List of allowed subscription line schemes |
 | `upstreams` | 3x-ui panel URL templates; must contain `%s` for `subId` substitution |
 | `static_inject` | Optional. List of static configs (`{url, name, sub_ids}`) appended to subscription output. Useful for inbounds outside 3x-ui (e.g. a manually launched xray on another node). If `sub_ids` is empty — injected for everyone; otherwise only for the listed `subId`s. |
+| `force_query_params` | Optional. Rewrites selected URI query parameters before rendering: `fingerprint`, `alpn`, `allow_insecure`. Applied only to TLS-like links; plain VLESS is left unchanged. |
 | `clash_extra` | Optional. Path to base YAML for clash format (dns, tun, rule-providers, custom proxy-groups). See "Extending Clash output". |
 
 Environment variables:

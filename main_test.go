@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 )
 
@@ -66,5 +67,100 @@ func TestDetectFormat(t *testing.T) {
 					tc.userAgent, tc.queryType, got, tc.wantFormat)
 			}
 		})
+	}
+}
+
+func TestForceQueryParamsURI(t *testing.T) {
+	allowInsecure := true
+	params := ForceQueryParams{
+		Fingerprint:   "firefox",
+		ALPN:          " h2, http/1.1 ",
+		AllowInsecure: &allowInsecure,
+	}
+	tests := []struct {
+		name         string
+		uri          string
+		wantFP       string
+		wantALPN     string
+		wantInsecure string
+	}{
+		{
+			name:         "adds params to tls xhttp vless",
+			uri:          "vless://u@example.com:443?security=tls&type=xhttp#node",
+			wantFP:       "firefox",
+			wantALPN:     "h2,http/1.1",
+			wantInsecure: "1",
+		},
+		{
+			name:         "replaces existing fp",
+			uri:          "vless://u@example.com:443?security=tls&type=xhttp&fp=chrome#node",
+			wantFP:       "firefox",
+			wantALPN:     "h2,http/1.1",
+			wantInsecure: "1",
+		},
+		{
+			name:         "adds tls params to reality vless",
+			uri:          "vless://u@example.com:443?security=reality&type=xhttp&pbk=p&sid=s#node",
+			wantFP:       "firefox",
+			wantALPN:     "h2,http/1.1",
+			wantInsecure: "1",
+		},
+		{
+			name: "does not add fp to non-tls vless",
+			uri:  "vless://u@example.com:80?security=none&type=tcp#node",
+		},
+		{
+			name:         "adds params to trojan",
+			uri:          "trojan://pass@example.com:443?sni=example.com#node",
+			wantFP:       "firefox",
+			wantALPN:     "h2,http/1.1",
+			wantInsecure: "1",
+		},
+		{
+			name: "leaves unsupported schemes unchanged",
+			uri:  "ss://YWVzLTI1Ni1nY206cGFzcw@example.com:8388#node",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := forceQueryParamsURI(tc.uri, params)
+			u, err := url.Parse(got)
+			if err != nil {
+				t.Fatalf("parse normalized URI: %v", err)
+			}
+			q := u.Query()
+			if gotFP := q.Get("fp"); gotFP != tc.wantFP {
+				t.Fatalf("fp=%q, want %q in %s", gotFP, tc.wantFP, got)
+			}
+			if gotALPN := q.Get("alpn"); gotALPN != tc.wantALPN {
+				t.Fatalf("alpn=%q, want %q in %s", gotALPN, tc.wantALPN, got)
+			}
+			if gotInsecure := q.Get("insecure"); gotInsecure != tc.wantInsecure {
+				t.Fatalf("insecure=%q, want %q in %s", gotInsecure, tc.wantInsecure, got)
+			}
+			if gotAllowInsecure := q.Get("allowInsecure"); gotAllowInsecure != tc.wantInsecure {
+				t.Fatalf("allowInsecure=%q, want %q in %s", gotAllowInsecure, tc.wantInsecure, got)
+			}
+			if gotAllowInsecure := q.Get("allow_insecure"); gotAllowInsecure != tc.wantInsecure {
+				t.Fatalf("allow_insecure=%q, want %q in %s", gotAllowInsecure, tc.wantInsecure, got)
+			}
+		})
+	}
+}
+
+func TestForceQueryParamsURIAllowInsecureFalse(t *testing.T) {
+	allowInsecure := false
+	got := forceQueryParamsURI(
+		"vless://u@example.com:443?security=tls&type=xhttp&allowInsecure=1#node",
+		ForceQueryParams{AllowInsecure: &allowInsecure},
+	)
+	u, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("parse normalized URI: %v", err)
+	}
+	q := u.Query()
+	if q.Get("insecure") != "0" || q.Get("allowInsecure") != "0" || q.Get("allow_insecure") != "0" {
+		t.Fatalf("allow insecure params not forced false: %s", got)
 	}
 }

@@ -52,6 +52,16 @@ upstreams:
 #     name: "Backup endpoint"
 #     sub_ids: ["abc123def456"]
 
+# Опциональная принудительная правка query-параметров в клиентских URI перед
+# выдачей подписки. Применяется только к TLS-подобным ссылкам, где эти параметры
+# имеют смысл: VLESS security=tls/reality, Trojan, Hysteria2/Hy2, TUIC.
+# VLESS security=none не меняется.
+#
+# force_query_params:
+#   fingerprint: firefox
+#   alpn: h2,http/1.1
+#   allow_insecure: false
+
 # Опциональный путь к base-YAML для clash-формата (mihomo). Содержимое файла
 # мерджится в выдачу: `proxies` всегда наш, остальное (`dns`, `tun`,
 # `rule-providers`, `rules`, `proxy-groups`) — из base. Если параметр пуст,

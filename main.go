@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -26,6 +27,12 @@ type Config struct {
 	ValidPrefixes   []string       `yaml:"valid_prefixes"`
 	Upstreams       []string       `yaml:"upstreams"`
 	StaticInject    []StaticInject `yaml:"static_inject,omitempty"`
+	// ForceFingerprint rewrites URI-level TLS client fingerprints (fp=...)
+	// before rendering. Empty means pass upstream values through unchanged.
+	ForceFingerprint string `yaml:"force_fingerprint,omitempty"`
+	// ForceQueryParams rewrites selected client URI query parameters before
+	// rendering. It is intended for TLS-like share links generated upstream.
+	ForceQueryParams ForceQueryParams `yaml:"force_query_params,omitempty"`
 	// Optional path to a YAML file with Mihomo base config (dns, tun,
 	// rule-providers, rules, proxy-groups, etc). Merged into clash output;
 	// `proxies` is always overwritten. When empty, a minimal output with a
@@ -41,11 +48,18 @@ type StaticInject struct {
 	SubIDs []string `yaml:"sub_ids,omitempty"`
 }
 
+type ForceQueryParams struct {
+	Fingerprint   string `yaml:"fingerprint,omitempty"`
+	ALPN          string `yaml:"alpn,omitempty"`
+	AllowInsecure *bool  `yaml:"allow_insecure,omitempty"`
+}
+
 var (
 	listenAddr   string
 	routePrefix  string
 	maxSubIDLen  int
 	staticInject []StaticInject
+	forceParams  ForceQueryParams
 	fetcher      *fetch.Client
 	clashExtra   map[string]any // loaded once at startup, nil if not configured
 )
@@ -148,6 +162,11 @@ func loadConfig(path string) error {
 	routePrefix = cfg.RoutePrefix
 	maxSubIDLen = cfg.MaxSubIDLen
 	staticInject = cfg.StaticInject
+	forceParams = cfg.ForceQueryParams.normalized()
+	// Backward compatibility for the older single-field override.
+	if forceParams.Fingerprint == "" {
+		forceParams.Fingerprint = strings.TrimSpace(cfg.ForceFingerprint)
+	}
 	clashExtra = extra
 	fetcher = &fetch.Client{
 		HTTP:          &http.Client{Timeout: to},
@@ -182,6 +201,83 @@ func subIDInList(list []string, id string) bool {
 		}
 	}
 	return false
+}
+
+func (p ForceQueryParams) normalized() ForceQueryParams {
+	p.Fingerprint = strings.TrimSpace(p.Fingerprint)
+	p.ALPN = normalizeCommaList(p.ALPN)
+	return p
+}
+
+func normalizeCommaList(raw string) string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+func (p ForceQueryParams) empty() bool {
+	return p.Fingerprint == "" && p.ALPN == "" && p.AllowInsecure == nil
+}
+
+func forceQueryParamsURI(uri string, params ForceQueryParams) string {
+	params = params.normalized()
+	if params.empty() {
+		return uri
+	}
+	u, err := url.Parse(uri)
+	if err != nil {
+		return uri
+	}
+	q := u.Query()
+	scheme := strings.ToLower(u.Scheme)
+	security := strings.ToLower(q.Get("security"))
+	switch scheme {
+	case "vless":
+		if security != "tls" && security != "reality" {
+			return uri
+		}
+	case "trojan", "hysteria2", "hy2", "tuic":
+		// These schemes use TLS in normal clients and understand fp=.
+	default:
+		return uri
+	}
+	if params.Fingerprint != "" {
+		q.Set("fp", params.Fingerprint)
+	}
+	if params.ALPN != "" {
+		q.Set("alpn", params.ALPN)
+	}
+	if params.AllowInsecure != nil {
+		value := "0"
+		if *params.AllowInsecure {
+			value = "1"
+		}
+		// v2rayNG accepts all three spellings; emitting them keeps older and
+		// patched clients aligned when they differ on the preferred key.
+		q.Set("insecure", value)
+		q.Set("allowInsecure", value)
+		q.Set("allow_insecure", value)
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+func forceQueryParamsURIs(uris []string, params ForceQueryParams) []string {
+	params = params.normalized()
+	if params.empty() {
+		return uris
+	}
+	out := make([]string, len(uris))
+	for i, uri := range uris {
+		out[i] = forceQueryParamsURI(uri, params)
+	}
+	return out
 }
 
 // detectFormat resolves the output format from query param (priority 1) and
@@ -227,6 +323,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			uris = append(uris, si.URL)
 		}
 	}
+	uris = forceQueryParamsURIs(uris, forceParams)
 
 	if len(uris) == 0 {
 		http.Error(w, "all upstreams failed", http.StatusBadGateway)
